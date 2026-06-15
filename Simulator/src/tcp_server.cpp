@@ -112,6 +112,7 @@ void TcpServer::acceptThread() {
 
 void TcpServer::clientThread(SOCKET clientSock) {
     std::vector<uint8_t> buffer(DATA_SIZE);
+    std::vector<uint8_t> stream;
     u_long mode = 1;
     ioctlsocket(clientSock, FIONBIO, &mode);
     while (m_running) {
@@ -130,15 +131,33 @@ void TcpServer::clientThread(SOCKET clientSock) {
             }
             break;
         }
-        std::vector<uint8_t> request(buffer.begin(), buffer.begin() + bytesRead);
-        std::cout << "[Simulator] RX: " << Util::bytesToHex(request) << std::endl;
-        if (m_responseDelayMs > 0)
-            std::this_thread::sleep_for(std::chrono::milliseconds(m_responseDelayMs));
-        auto response = handleFrame(request);
-        if (!response.empty()) {
-            ::send(clientSock, reinterpret_cast<const char*>(response.data()),
-                   static_cast<int>(response.size()), 0);
-            std::cout << "[Simulator] TX: " << Util::bytesToHex(response) << std::endl;
+        stream.insert(stream.end(), buffer.begin(), buffer.begin() + bytesRead);
+        while (stream.size() >= HEADER_218_SIZE) {
+            const size_t frameSize = stream[6] | (static_cast<size_t>(stream[7]) << 8);
+            if (frameSize < TOTAL_HEADER_SIZE || frameSize > DATA_SIZE) {
+                std::cerr << "[Simulator] Invalid frame length: " << frameSize << std::endl;
+                stream.clear();
+                break;
+            }
+            if (stream.size() < frameSize) break;
+
+            std::vector<uint8_t> request(stream.begin(), stream.begin() + frameSize);
+            stream.erase(stream.begin(), stream.begin() + frameSize);
+            std::cout << "[Simulator] RX: " << Util::bytesToHex(request) << std::endl;
+            if (m_responseDelayMs > 0)
+                std::this_thread::sleep_for(std::chrono::milliseconds(m_responseDelayMs));
+            auto response = handleFrame(request);
+            size_t sentTotal = 0;
+            while (sentTotal < response.size()) {
+                const int sent = ::send(clientSock,
+                    reinterpret_cast<const char*>(response.data() + sentTotal),
+                    static_cast<int>(response.size() - sentTotal), 0);
+                if (sent <= 0) break;
+                sentTotal += static_cast<size_t>(sent);
+            }
+            if (!response.empty()) {
+                std::cout << "[Simulator] TX: " << Util::bytesToHex(response) << std::endl;
+            }
         }
         // Simulate motion
         {
@@ -184,6 +203,13 @@ std::vector<uint8_t> TcpServer::handleFrame(const std::vector<uint8_t>& request)
                   << std::hex << static_cast<int>(request[0]) << std::dec << std::endl;
         return {};
     }
+    const uint16_t declaredTotal = request[6] | (request[7] << 8);
+    const uint16_t declaredMemobus = request[12] | (request[13] << 8);
+    if (declaredTotal != request.size() || declaredMemobus + 14 != request.size() ||
+        request[14] != MFC_VALUE) {
+        std::cerr << "[Simulator] Invalid MEMOBUS frame header" << std::endl;
+        return {};
+    }
     uint8_t sfc = request[15];
     switch (sfc) {
     case static_cast<uint8_t>(SFC::ReadHoldingRegisters):
@@ -220,19 +246,33 @@ std::vector<uint8_t> TcpServer::handleReadRegisters(const std::vector<uint8_t>& 
     uint16_t startAddr = req[18] | (req[19] << 8);
     uint16_t count = req[20] | (req[21] << 8);
     if (count == 0 || count > 125) return {};
+    // 手册中的 SFC=0x09 响应省略请求中的引用地址:
+    // [18-19] 为数量，[20...] 为数据，因此总长度为 20 + count * 2。
+    const uint16_t totalLen = READ_RESPONSE_DATA_OFFSET + count * 2;
+    const uint16_t memobusLen = totalLen - HEADER_218_SIZE - MEMOBUS_LENGTH_SIZE;
+    std::vector<uint8_t> response(totalLen, 0);
+    std::copy_n(req.begin(), 18, response.begin());
+    response[0] = static_cast<uint8_t>(DataType::Response);
+    response[6] = static_cast<uint8_t>(totalLen & 0xFF);
+    response[7] = static_cast<uint8_t>((totalLen >> 8) & 0xFF);
+    response[12] = static_cast<uint8_t>(memobusLen & 0xFF);
+    response[13] = static_cast<uint8_t>((memobusLen >> 8) & 0xFF);
+    response[18] = static_cast<uint8_t>(count & 0xFF);
+    response[19] = static_cast<uint8_t>((count >> 8) & 0xFF);
+
     std::lock_guard<std::mutex> lock(m_regMutex);
-    std::vector<uint8_t> regData;
     for (uint16_t i = 0; i < count; ++i) {
         uint16_t addr = startAddr + i;
         uint16_t value = m_registers.count(addr) ? m_registers[addr] : 0;
-        regData.push_back(static_cast<uint8_t>(value & 0xFF));        // L
-        regData.push_back(static_cast<uint8_t>((value >> 8) & 0xFF)); // H
+        response[READ_RESPONSE_DATA_OFFSET + i * 2] = static_cast<uint8_t>(value & 0xFF);
+        response[READ_RESPONSE_DATA_OFFSET + i * 2 + 1] = static_cast<uint8_t>((value >> 8) & 0xFF);
     }
-    return buildResponse(req, regData);
+    return response;
 }
 
 std::vector<uint8_t> TcpServer::handleWriteSingle(const std::vector<uint8_t>& req) {
     // SFC=0x0B: Adr[18-19], Count[20-21]=1, Data[22-23]
+    if (req.size() < 24 || req[20] != 1 || req[21] != 0) return {};
     uint16_t addr = req[18] | (req[19] << 8);
     uint16_t value = req[22] | (req[23] << 8);
     {
@@ -249,7 +289,8 @@ std::vector<uint8_t> TcpServer::handleWriteMultiple(const std::vector<uint8_t>& 
     // SFC=0x0C: Adr[18-19], Count[20-21], Data[22..]
     uint16_t startAddr = req[18] | (req[19] << 8);
     uint16_t count = req[20] | (req[21] << 8);
-    if (count == 0 || count > 123) return {};
+    if (count == 0 || count > 123 ||
+        req.size() != TOTAL_HEADER_SIZE + static_cast<size_t>(count) * 2) return {};
     {
         std::lock_guard<std::mutex> lock(m_regMutex);
         for (uint16_t i = 0; i < count; ++i) {
@@ -287,6 +328,12 @@ int32_t TcpServer::getRegister32(uint16_t addr) const {
     uint16_t hi = m_registers.count(addr) ? m_registers.at(addr) : 0;
     uint16_t lo = m_registers.count(addr + 1) ? m_registers.at(addr + 1) : 0;
     return (static_cast<int32_t>(hi) << 16) | lo;
+}
+
+void TcpServer::setSimulateAlarm(bool alarm) {
+    m_simulateAlarm = alarm;
+    std::lock_guard<std::mutex> lock(m_regMutex);
+    m_registers[0x0003] = alarm ? 1 : 0;
 }
 
 } // namespace sim

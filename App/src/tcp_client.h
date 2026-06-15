@@ -5,6 +5,7 @@
 #include <string>
 #include <vector>
 #include <mutex>
+#include <condition_variable>
 #include <atomic>
 #include <thread>
 #include <functional>
@@ -27,7 +28,9 @@ public:
     ~TcpClient();
 
     // 连接到 MP2310 设备
-    bool connect(const std::string& host, uint16_t port = 16002);
+    // localHost/localPort 为 PC 侧绑定地址；0.0.0.0:0 表示由系统自动选择。
+    bool connect(const std::string& host, uint16_t port = 16002,
+                 const std::string& localHost = "0.0.0.0", uint16_t localPort = 0);
     
     // 断开连接
     void disconnect();
@@ -79,6 +82,8 @@ private:
 
     std::thread m_recvThread;
     mutable std::mutex m_mutex;
+    std::mutex m_sendMutex;
+    std::condition_variable m_pendingCv;
 
     OnDataCallback m_onData;
     OnErrorCallback m_onError;
@@ -87,6 +92,7 @@ private:
     // 同步请求-响应支持
     struct PendingRequest {
         uint8_t serial;
+        std::vector<uint8_t> request;
         std::vector<uint8_t> response;
         bool completed{false};
     };

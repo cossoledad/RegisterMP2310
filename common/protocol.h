@@ -26,7 +26,7 @@
 //   [6-7] DATAi: 总数据数 (218报头起始至MEMOBUS数据末尾) L/H
 //   [8-11] 预约 (0x00)
 //
-// MEMOBUS数据部:
+// 指令 MEMOBUS 数据部:
 //   [12-13] MDATAi: MEMOBUS数据长度 (MFC至数据末尾) L/H
 //   [14]   MFC: 固定0x20
 //   [15]   SFC: 子功能码
@@ -34,7 +34,11 @@
 //   [17]   Spare (0x00)
 //   [18-19] Adr: 引用编号 (起始地址) L/H
 //   [20-21] DataNum: 寄存器数 L/H
-//   [22+]  寄存器数据 (仅在写入指令或响应中包含)
+//   [22+]  写入数据
+//
+// SFC=0x09 读取响应与指令布局不同:
+//   [18-19] 返回的寄存器数
+//   [20+]   寄存器数据
 // ============================================================
 
 namespace mp2310 {
@@ -45,6 +49,7 @@ constexpr int MEMOBUS_LENGTH_SIZE = 2;  // MEMOBUS数据长度字段
 constexpr int MEMOBUS_DATA_OFFSET = HEADER_218_SIZE + MEMOBUS_LENGTH_SIZE;  // =14
 constexpr int MEMOBUS_FIXED_SIZE = 8;   // MEMOBUS数据固定部分 (MFC~DataNum)
 constexpr int TOTAL_HEADER_SIZE = MEMOBUS_DATA_OFFSET + MEMOBUS_FIXED_SIZE; // =22
+constexpr int READ_RESPONSE_DATA_OFFSET = 20;
 constexpr int DATA_SIZE = 4096;         // 最大缓冲区
 
 // ========== 数据类别 ==========
@@ -66,18 +71,18 @@ constexpr uint8_t MFC_VALUE = 0x20;
 // ========== MP2310 寄存器地址 (MW) ==========
 namespace RegisterAddress {
     // MW00000 ~ MW00009 (手册示例使用)
-    constexpr uint16_t MW00000 = 0x0000;  // 状态字
-    constexpr uint16_t MW00001 = 0x0001;  // 控制字
-    constexpr uint16_t MW00002 = 0x0002;  // 运行模式
-    constexpr uint16_t MW00003 = 0x0003;  // 报警代码
-    constexpr uint16_t MW00004 = 0x0004;  // 用户数据1
-    constexpr uint16_t MW00005 = 0x0005;  // 用户数据2
-    constexpr uint16_t MW00006 = 0x0006;  // 用户数据3
-    constexpr uint16_t MW00007 = 0x0007;  // 用户数据4
-    constexpr uint16_t MW00008 = 0x0008;  // 用户数据5
-    constexpr uint16_t MW00009 = 0x0009;  // 用户数据6
+    constexpr uint16_t MW00000 = 0x0000;
+    constexpr uint16_t MW00001 = 0x0001;
+    constexpr uint16_t MW00002 = 0x0002;
+    constexpr uint16_t MW00003 = 0x0003;
+    constexpr uint16_t MW00004 = 0x0004;
+    constexpr uint16_t MW00005 = 0x0005;
+    constexpr uint16_t MW00006 = 0x0006;
+    constexpr uint16_t MW00007 = 0x0007;
+    constexpr uint16_t MW00008 = 0x0008;
+    constexpr uint16_t MW00009 = 0x0009;
 
-    // 位置相关 (扩展定义)
+    // 仅供当前模拟器演示运动效果，不代表 MP2310 标准寄存器分配。
     constexpr uint16_t TARGET_POSITION   = 0x0100;  // 目标位置 (32位)
     constexpr uint16_t CURRENT_POSITION  = 0x0102;  // 当前位置 (32位)
     constexpr uint16_t TARGET_SPEED      = 0x0104;  // 目标速度 (32位)
@@ -159,6 +164,7 @@ public:
     // 构建读取保持寄存器指令 (SFC=0x09)
     // DATAi = 14 + 8 = 22 (固定)
     static std::vector<uint8_t> buildReadCommand(uint8_t serial, uint16_t addr, uint16_t count) {
+        if (count == 0 || count > 125) return {};
         std::vector<uint8_t> buf(DATA_SIZE, 0);
         // 218报头
         buf[0] = static_cast<uint8_t>(DataType::Command);  // 0x11
@@ -252,7 +258,8 @@ class ResponseValidator {
 public:
     // 验证响应数据，返回0=成功，负值=错误码
     static int validate(int rlen, const std::vector<uint8_t>& sbuf, const std::vector<uint8_t>& rbuf) {
-        if (rlen < TOTAL_HEADER_SIZE) return -3;
+        if (sbuf.size() < TOTAL_HEADER_SIZE || rbuf.size() < READ_RESPONSE_DATA_OFFSET ||
+            rlen != static_cast<int>(rbuf.size())) return -3;
 
         // 检查数据包类型
         if (rbuf[0] != static_cast<uint8_t>(DataType::Response)) return -4;  // 非响应
@@ -270,12 +277,16 @@ public:
         uint8_t sfc = sbuf[15];
         if (sfc == static_cast<uint8_t>(SFC::ReadHoldingRegisters)) {
             uint16_t reqCount = sbuf[20] | (sbuf[21] << 8);
-            uint16_t rspCount = rbuf[20] | (rbuf[21] << 8);  // [20-21] 是数量字段
+            // 手册示例的读取响应省略引用地址，数量位于 [18-19]。
+            uint16_t rspCount = rbuf[18] | (rbuf[19] << 8);
             if (rspCount != reqCount) return -9;
 
             // 检查总长度: 20 + DataNum*2
             int expectedLen = 20 + reqCount * 2;
             if (rlen != expectedLen) return -3;
+            uint16_t declaredTotal = rbuf[6] | (rbuf[7] << 8);
+            uint16_t declaredMemobus = rbuf[12] | (rbuf[13] << 8);
+            if (declaredTotal != expectedLen || declaredMemobus != expectedLen - 14) return -6;
         }
 
         return 0;  // OK
@@ -300,15 +311,18 @@ namespace Util {
     // 从响应中提取寄存器值
     inline std::vector<uint16_t> extractRegisters(const std::vector<uint8_t>& rbuf) {
         std::vector<uint16_t> regs;
-        if (rbuf.size() < TOTAL_HEADER_SIZE + 2) return regs;
-        // 注意: MEMOBUS帧中 [18-19]=地址, [20-21]=寄存器数量 (LE格式)
-        uint16_t count = rbuf[20] | (rbuf[21] << 8);
-        uint16_t addr  = rbuf[18] | (rbuf[19] << 8);  // 起始地址
-        // 只有读响应(SFC=0x09)才包含寄存器数据
-        // 数据从 TOTAL_HEADER_SIZE(=22) 开始, 每寄存器2字节 LE格式
-        for (uint16_t i = 0; i < count && (TOTAL_HEADER_SIZE + i * 2 + 1) < rbuf.size(); ++i) {
-            uint16_t val = rbuf[TOTAL_HEADER_SIZE + i * 2] |
-                          (rbuf[TOTAL_HEADER_SIZE + i * 2 + 1] << 8);
+        if (rbuf.size() < READ_RESPONSE_DATA_OFFSET ||
+            rbuf[0] != static_cast<uint8_t>(DataType::Response) ||
+            rbuf[14] != MFC_VALUE ||
+            rbuf[15] != static_cast<uint8_t>(SFC::ReadHoldingRegisters)) return regs;
+        const uint16_t totalLength = rbuf[6] | (rbuf[7] << 8);
+        const uint16_t memobusLength = rbuf[12] | (rbuf[13] << 8);
+        if (totalLength != rbuf.size() || memobusLength + 14 != rbuf.size()) return regs;
+        uint16_t count = rbuf[18] | (rbuf[19] << 8);
+        if (rbuf.size() != READ_RESPONSE_DATA_OFFSET + static_cast<size_t>(count) * 2) return regs;
+        for (uint16_t i = 0; i < count; ++i) {
+            const size_t offset = READ_RESPONSE_DATA_OFFSET + i * 2;
+            uint16_t val = rbuf[offset] | (rbuf[offset + 1] << 8);
             regs.push_back(val);
         }
         return regs;

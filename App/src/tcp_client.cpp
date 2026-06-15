@@ -23,7 +23,8 @@ TcpClient::~TcpClient() {
     disconnect();
 }
 
-bool TcpClient::connect(const std::string& host, uint16_t port) {
+bool TcpClient::connect(const std::string& host, uint16_t port,
+                        const std::string& localHost, uint16_t localPort) {
     if (m_connected) disconnect();
 
     m_host = host;
@@ -36,10 +37,33 @@ bool TcpClient::connect(const std::string& host, uint16_t port) {
         return false;
     }
 
-    sockaddr_in addr;
+    sockaddr_in localAddress{};
+    localAddress.sin_family = AF_INET;
+    localAddress.sin_port = htons(localPort);
+    if (inet_pton(AF_INET, localHost.c_str(), &localAddress.sin_addr) != 1) {
+        if (m_onError) m_onError("Invalid local IPv4 address: " + localHost);
+        closesocket(m_socket);
+        m_socket = INVALID_SOCKET;
+        return false;
+    }
+    if (::bind(m_socket, reinterpret_cast<sockaddr*>(&localAddress), sizeof(localAddress)) ==
+        SOCKET_ERROR) {
+        if (m_onError) m_onError("Failed to bind local address " + localHost + ":" +
+                                 std::to_string(localPort));
+        closesocket(m_socket);
+        m_socket = INVALID_SOCKET;
+        return false;
+    }
+
+    sockaddr_in addr{};
     addr.sin_family = AF_INET;
     addr.sin_port = htons(port);
-    inet_pton(AF_INET, host.c_str(), &addr.sin_addr);
+    if (inet_pton(AF_INET, host.c_str(), &addr.sin_addr) != 1) {
+        if (m_onError) m_onError("Invalid IPv4 address: " + host);
+        closesocket(m_socket);
+        m_socket = INVALID_SOCKET;
+        return false;
+    }
 
     int result = ::connect(m_socket, reinterpret_cast<sockaddr*>(&addr), sizeof(addr));
     if (result == SOCKET_ERROR) {
@@ -67,19 +91,25 @@ void TcpClient::disconnect() {
     {
         std::lock_guard<std::mutex> lock(m_mutex);
         for (auto& req : m_pendingRequests) req.completed = true;
-        m_pendingRequests.clear();
     }
+    m_pendingCv.notify_all();
 }
 
 bool TcpClient::sendFrame(const std::vector<uint8_t>& frame) {
-    if (!m_connected) return false;
+    if (!m_connected || frame.empty()) return false;
 
-    int sent = ::send(m_socket, reinterpret_cast<const char*>(frame.data()),
-                      static_cast<int>(frame.size()), 0);
-    if (sent == SOCKET_ERROR) {
-        if (m_onError) m_onError("Send failed");
-        m_errorCount++;
-        return false;
+    // TCP 的 send 允许只发送一部分数据，必须循环到完整帧全部发出。
+    std::lock_guard<std::mutex> sendLock(m_sendMutex);
+    size_t offset = 0;
+    while (offset < frame.size()) {
+        int sent = ::send(m_socket, reinterpret_cast<const char*>(frame.data() + offset),
+                          static_cast<int>(frame.size() - offset), 0);
+        if (sent == SOCKET_ERROR || sent == 0) {
+            if (m_onError) m_onError("Send failed: " + std::to_string(WSAGetLastError()));
+            m_errorCount++;
+            return false;
+        }
+        offset += static_cast<size_t>(sent);
     }
     m_sentCount++;
     return true;
@@ -106,13 +136,14 @@ bool TcpClient::sendWriteMultiCommand(uint16_t addr, const std::vector<uint16_t>
 
 bool TcpClient::sendAndWait(const std::vector<uint8_t>& frame, 
                              std::vector<uint8_t>& response, int timeoutMs) {
-    if (!m_connected) return false;
+    if (!m_connected || frame.size() < TOTAL_HEADER_SIZE) return false;
 
     uint8_t serial = frame[1];  // 序列号在字节[1]
 
     // 注册等待请求
     PendingRequest pending;
     pending.serial = serial;
+    pending.request = frame;
     {
         std::lock_guard<std::mutex> lock(m_mutex);
         m_pendingRequests.push_back(pending);
@@ -120,38 +151,32 @@ bool TcpClient::sendAndWait(const std::vector<uint8_t>& frame,
 
     if (!sendFrame(frame)) {
         std::lock_guard<std::mutex> lock(m_mutex);
-        m_pendingRequests.pop_back();
+        m_pendingRequests.erase(
+            std::remove_if(m_pendingRequests.begin(), m_pendingRequests.end(),
+                [serial](const PendingRequest& r) { return r.serial == serial; }),
+            m_pendingRequests.end());
         return false;
     }
 
-    // 等待响应
-    auto startTime = std::chrono::steady_clock::now();
-    while (true) {
-        {
-            std::lock_guard<std::mutex> lock(m_mutex);
-            auto it = std::find_if(m_pendingRequests.begin(), m_pendingRequests.end(),
-                [serial](const PendingRequest& r) { return r.serial == serial && r.completed; });
-            if (it != m_pendingRequests.end()) {
-                response = it->response;
-                m_pendingRequests.erase(it);
-                return true;
-            }
-        }
-        auto elapsed = std::chrono::steady_clock::now() - startTime;
-        if (std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count() >= timeoutMs) {
-            std::lock_guard<std::mutex> lock(m_mutex);
-            m_pendingRequests.erase(
-                std::remove_if(m_pendingRequests.begin(), m_pendingRequests.end(),
-                    [serial](const PendingRequest& r) { return r.serial == serial; }),
-                m_pendingRequests.end());
-            return false;
-        }
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    std::unique_lock<std::mutex> lock(m_mutex);
+    const bool ready = m_pendingCv.wait_for(lock, std::chrono::milliseconds(timeoutMs), [&] {
+        return !m_connected || std::any_of(m_pendingRequests.begin(), m_pendingRequests.end(),
+            [serial](const PendingRequest& r) { return r.serial == serial && r.completed; });
+    });
+    auto it = std::find_if(m_pendingRequests.begin(), m_pendingRequests.end(),
+        [serial](const PendingRequest& r) { return r.serial == serial; });
+    if (ready && it != m_pendingRequests.end() && it->completed && !it->response.empty()) {
+        response = std::move(it->response);
+        m_pendingRequests.erase(it);
+        return true;
     }
+    if (it != m_pendingRequests.end()) m_pendingRequests.erase(it);
+    return false;
 }
 
 void TcpClient::receiveThread() {
     std::vector<uint8_t> buffer(DATA_SIZE);
+    std::vector<uint8_t> stream;
 
     while (m_connected) {
         int bytesRead = ::recv(m_socket, reinterpret_cast<char*>(buffer.data()),
@@ -172,37 +197,44 @@ void TcpClient::receiveThread() {
             }
             break;
         }
-        m_recvCount++;
+        stream.insert(stream.end(), buffer.begin(), buffer.begin() + bytesRead);
 
-        // 复制收到的数据
-        std::vector<uint8_t> received(buffer.begin(), buffer.begin() + bytesRead);
+        // TCP 是字节流，一次 recv 可能包含半帧或多帧。218 报头的 [6-7]
+        // 给出完整帧长度，可据此拆包。
+        while (stream.size() >= HEADER_218_SIZE) {
+            const size_t frameSize = stream[6] | (static_cast<size_t>(stream[7]) << 8);
+            if (frameSize < READ_RESPONSE_DATA_OFFSET || frameSize > DATA_SIZE) {
+                if (m_onError) m_onError("Invalid response frame length");
+                m_errorCount++;
+                stream.clear();
+                break;
+            }
+            if (stream.size() < frameSize) break;
+            std::vector<uint8_t> received(stream.begin(), stream.begin() + frameSize);
+            stream.erase(stream.begin(), stream.begin() + frameSize);
+            m_recvCount++;
 
-        // 验证响应
-        int rc = 0;
-        {
-            // 我们需要从待匹配中获取对应的发送帧用于验证
-            // 这里简化处理: 仅调用回调，不做完整验证
-        }
+            if (m_onData) m_onData(received);
 
-        // 触发数据回调
-        if (m_onData) {
-            m_onData(received);
-        }
-
-        // 匹配等待队列 (通过序列号)
-        if (received.size() > 1) {
             uint8_t rspSerial = received[1];
             std::lock_guard<std::mutex> lock(m_mutex);
             for (auto& req : m_pendingRequests) {
                 if (req.serial == rspSerial && !req.completed) {
-                    req.response = received;
-                    req.completed = true;
+                    if (ResponseValidator::validate(static_cast<int>(received.size()),
+                                                    req.request, received) == 0) {
+                        req.response = received;
+                        req.completed = true;
+                        m_pendingCv.notify_all();
+                    } else {
+                        m_errorCount++;
+                    }
                 }
             }
         }
     }
 
     m_connected = false;
+    m_pendingCv.notify_all();
     if (m_onConnect) m_onConnect(false);
 }
 

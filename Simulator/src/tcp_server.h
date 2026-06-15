@@ -36,7 +36,7 @@ public:
     int32_t getRegister32(uint16_t addr) const;
 
     int getClientCount() const { return m_clientCount; }
-    void setSimulateAlarm(bool alarm) { m_simulateAlarm = alarm; }
+    void setSimulateAlarm(bool alarm);
     void setResponseDelay(int ms) { m_responseDelayMs = ms; }
 
 private:

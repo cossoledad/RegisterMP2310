@@ -1,8 +1,11 @@
 cmake_minimum_required(VERSION 3.20)
 project(MP2310-Communication VERSION 1.0.0 LANGUAGES CXX)
 
-# C++ 标准
-set(CMAKE_CXX_STANDARD 17)
+include(CTest)
+
+# GCC 15 supports C++23; the project keeps the implementation portable within
+# that standard while remaining a native Win32 application.
+set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # 输出目录

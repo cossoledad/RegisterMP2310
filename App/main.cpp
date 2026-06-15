@@ -28,17 +28,17 @@
 // ============================================================
 struct AppState {
     // Connection settings
-    char pcIp[64] = "127.0.0.1";
-    int  pcPort = 16002;
+    char pcIp[64] = "0.0.0.0";
+    int  pcPort = 0;
     char mpIp[64] = "127.0.0.1";
     int  mpPort = 16002;
 
-    bool connected = false;
-    bool autoReadRunning = false;
+    std::atomic<bool> connected{false};
+    std::atomic<bool> autoReadRunning{false};
 
     // Register monitor: MW00000 ~ MW00009 (10 registers)
     static constexpr int REG_COUNT = 10;
-    uint16_t registers[REG_COUNT] = {};
+    std::atomic<uint16_t> registers[REG_COUNT] = {};
 
     // Editable register values (for writing)
     int writeAddr = 0;
@@ -54,7 +54,7 @@ struct AppState {
 
     // Auto-read timer thread
     std::thread timerThread;
-    bool timerRunning = false;
+    std::atomic<bool> timerRunning{false};
 };
 
 static AppState g_appState;
@@ -92,7 +92,7 @@ static void onClientConnect(bool connected) {
         g_appState.autoReadRunning = false;
         g_appState.timerRunning = false;
         // 清零寄存器显示
-        memset(g_appState.registers, 0, sizeof(g_appState.registers));
+        for (auto& reg : g_appState.registers) reg = 0;
     }
 }
 
@@ -110,6 +110,8 @@ static void autoReadThread() {
 
 static void startAutoRead() {
     if (g_appState.autoReadRunning) return;
+    // 远端断线时工作线程会自行退出，但仍必须 join 后才能重新赋值 thread。
+    if (g_appState.timerThread.joinable()) g_appState.timerThread.join();
     g_appState.autoReadRunning = true;
     g_appState.timerRunning = true;
     g_appState.timerThread = std::thread(autoReadThread);
@@ -129,7 +131,7 @@ static void stopAutoRead() {
 static void ShowConnectionPanel() {
     ImGui::Begin("Connection Settings");
 
-    ImGui::TextColored(ImVec4(0.6f, 0.6f, 1.0f, 1.0f), "PC Side");
+    ImGui::TextColored(ImVec4(0.6f, 0.6f, 1.0f, 1.0f), "PC Side (0.0.0.0:0 = automatic)");
     ImGui::InputText("PC IP", g_appState.pcIp, sizeof(g_appState.pcIp));
     ImGui::InputInt("PC Port", &g_appState.pcPort);
 
@@ -140,14 +142,15 @@ static void ShowConnectionPanel() {
     ImGui::Separator();
 
     if (!g_appState.connected) {
-        if (ImGui::Button("TCP/UDP Open", ImVec2(140, 0))) {
+        if (ImGui::Button("TCP Open", ImVec2(140, 0))) {
             g_appState.client = std::make_unique<mp2310::TcpClient>();
             g_appState.client->setOnData(onClientData);
             g_appState.client->setOnError(onClientError);
             g_appState.client->setOnConnect(onClientConnect);
 
-            if (g_appState.client->connect(g_appState.mpIp,
-                                            static_cast<uint16_t>(g_appState.mpPort))) {
+            const auto pcPort = static_cast<uint16_t>(std::clamp(g_appState.pcPort, 0, 65535));
+            const auto mpPort = static_cast<uint16_t>(std::clamp(g_appState.mpPort, 1, 65535));
+            if (g_appState.client->connect(g_appState.mpIp, mpPort, g_appState.pcIp, pcPort)) {
                 g_appState.connected = true;
             } else {
                 g_appState.client.reset();
@@ -164,7 +167,7 @@ static void ShowConnectionPanel() {
     }
 
     ImGui::SameLine();
-    ImGui::Text("TX:%d RX:%d ERR:%d",
+    ImGui::Text("TX:%u RX:%u ERR:%u",
                g_appState.sentCount, g_appState.recvCount, g_appState.errorCount);
 
     ImGui::End();
@@ -209,15 +212,16 @@ static void ShowRegisterMonitor() {
         char addrStr[16];
         snprintf(addrStr, sizeof(addrStr), "MW%05d", i);
         ImGui::Text("%s", addrStr); ImGui::NextColumn();
-        ImGui::Text("%5d", g_appState.registers[i]); ImGui::NextColumn();
-        ImGui::Text("0x%04X", g_appState.registers[i]); ImGui::NextColumn();
+        const uint16_t value = g_appState.registers[i].load();
+        ImGui::Text("%5u", value); ImGui::NextColumn();
+        ImGui::Text("0x%04X", value); ImGui::NextColumn();
     }
 
     ImGui::Columns(1);
     ImGui::Separator();
 
     // Write section
-    ImGui::Text("Write Register:");
+    ImGui::Text("Experimental write (not covered by the supplied manual excerpt):");
     ImGui::PushItemWidth(120);
     ImGui::InputInt("Address (MW)", &g_appState.writeAddr);
     ImGui::SameLine();
