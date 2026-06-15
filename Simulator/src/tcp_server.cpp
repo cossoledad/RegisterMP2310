@@ -16,27 +16,26 @@ public:
 
 TcpServer::TcpServer() : m_port(16002) {
     // Default registers (MW00000 ~ MW00009)
-    m_registers[0x0000] = 0x0000;  // MW00000: Status
-    m_registers[0x0001] = 0x0000;  // MW00001: Control
-    m_registers[0x0002] = 0x0001;  // MW00002: Mode
-    m_registers[0x0003] = 0x0000;  // MW00003: Alarm
-    m_registers[0x0004] = 0x0000;  // MW00004
-    m_registers[0x0005] = 0x0000;  // MW00005
-    m_registers[0x0006] = 0x0000;  // MW00006
-    m_registers[0x0007] = 0x0000;  // MW00007
-    m_registers[0x0008] = 0x0000;  // MW00008
-    m_registers[0x0009] = 0x0000;  // MW00009
-    // Extended
-    m_registers[0x0100] = 0x0000;  // Target Pos H
-    m_registers[0x0101] = 0x0000;  // Target Pos L
-    m_registers[0x0102] = 0x0000;  // Current Pos H
-    m_registers[0x0103] = 0x0000;  // Current Pos L
-    m_registers[0x0104] = 0x0000;  // Target Speed H
+    m_registers[0x0000] = 0x0000;
+    m_registers[0x0001] = 0x0000;
+    m_registers[0x0002] = 0x0001;
+    m_registers[0x0003] = 0x0000;
+    m_registers[0x0004] = 0x0000;
+    m_registers[0x0005] = 0x0000;
+    m_registers[0x0006] = 0x0000;
+    m_registers[0x0007] = 0x0000;
+    m_registers[0x0008] = 0x0000;
+    m_registers[0x0009] = 0x0000;
+    m_registers[0x0100] = 0x0000;
+    m_registers[0x0101] = 0x0000;
+    m_registers[0x0102] = 0x0000;
+    m_registers[0x0103] = 0x0000;
+    m_registers[0x0104] = 0x0000;
     m_registers[0x0105] = 0x0000;
-    m_registers[0x0106] = 0x0000;  // Current Speed H
+    m_registers[0x0106] = 0x0000;
     m_registers[0x0107] = 0x0000;
-    m_registers[0x0108] = 100;     // Accel
-    m_registers[0x0109] = 100;     // Decel
+    m_registers[0x0108] = 100;
+    m_registers[0x0109] = 100;
 }
 
 TcpServer::~TcpServer() { stop(); }
