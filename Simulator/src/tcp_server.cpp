@@ -159,31 +159,6 @@ void TcpServer::clientThread(SOCKET clientSock) {
                 std::cout << "[Simulator] TX: " << Util::bytesToHex(response) << std::endl;
             }
         }
-        // Simulate motion
-        {
-            std::lock_guard<std::mutex> lock(m_regMutex);
-            uint16_t ctrl = m_registers[0x0001];
-            if (ctrl & 0x01) {
-                int32_t targetPos = (m_registers[0x0100] << 16) | m_registers[0x0101];
-                int32_t currentPos = (m_registers[0x0102] << 16) | m_registers[0x0103];
-                if (currentPos < targetPos) {
-                    currentPos += 10;
-                    if (currentPos > targetPos) currentPos = targetPos;
-                } else if (currentPos > targetPos) {
-                    currentPos -= 10;
-                    if (currentPos < targetPos) currentPos = targetPos;
-                }
-                m_registers[0x0102] = (currentPos >> 16) & 0xFFFF;
-                m_registers[0x0103] = currentPos & 0xFFFF;
-                m_registers[0x0106] = m_registers[0x0104];
-                m_registers[0x0107] = m_registers[0x0105];
-                m_registers[0x0000] |= 0x0001;
-            } else {
-                m_registers[0x0000] &= ~0x0001;
-                m_registers[0x0106] = 0;
-                m_registers[0x0107] = 0;
-            }
-        }
     }
     closesocket(clientSock);
     m_clientCount--;

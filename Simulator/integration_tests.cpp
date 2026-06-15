@@ -63,6 +63,20 @@ int main() {
     assert(client.sendAndWait(request, response, 1000));
     const auto registers = Util::extractRegisters(response);
     assert(registers.size() == 10 && registers[0] == 0x1234);
+
+    // MW00000..MW00009 are plain holding registers in the supplied example.
+    // Writing MW00001 must not implicitly toggle a status bit in MW00000.
+    auto write0 = FrameBuilder::buildWriteSingleCommand(0x45, 0, 100);
+    assert(client.sendAndWait(write0, response, 1000));
+    auto write1 = FrameBuilder::buildWriteSingleCommand(0x46, 1, 1);
+    assert(client.sendAndWait(write1, response, 1000));
+    const auto verifyRequest = FrameBuilder::buildReadCommand(0x47, 0, 2);
+    assert(client.sendAndWait(verifyRequest, response, 1000));
+    const auto verified = Util::extractRegisters(response);
+    assert(verified.size() == 2);
+    assert(verified[0] == 100);
+    assert(verified[1] == 1);
+
     client.disconnect();
 
     server.stop();

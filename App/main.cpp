@@ -129,6 +129,9 @@ static void stopAutoRead() {
 // ImGui UI
 // ============================================================
 static void ShowConnectionPanel() {
+    // 仅在窗口首次出现时应用默认布局，之后仍允许用户自由拖动和缩放。
+    ImGui::SetNextWindowPos(ImVec2(20.0f, 50.0f), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(410.0f, 270.0f), ImGuiCond_FirstUseEver);
     ImGui::Begin("Connection Settings");
 
     ImGui::TextColored(ImVec4(0.6f, 0.6f, 1.0f, 1.0f), "PC Side (0.0.0.0:0 = automatic)");
@@ -174,6 +177,8 @@ static void ShowConnectionPanel() {
 }
 
 static void ShowRegisterMonitor() {
+    ImGui::SetNextWindowPos(ImVec2(450.0f, 50.0f), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(420.0f, 500.0f), ImGuiCond_FirstUseEver);
     ImGui::Begin("Register Monitor (MW00000 ~ MW00009)");
 
     // Start/Stop buttons (matching the document's Start/Stop)
