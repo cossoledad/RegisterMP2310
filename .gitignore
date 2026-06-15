@@ -1,0 +1,45 @@
+# Build output
+build/
+*/build/
+
+# CMake generated files
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+*.cmake
+!CMakeLists.txt
+
+# Compiled binaries
+*.exe
+*.exe.manifest
+*.lib
+*.a
+*.dll
+*.pdb
+*.ilk
+*.exp
+
+# IDE files
+.vs/
+*.sln
+*.vcxproj*
+*.vcxproj.user
+*.vcxproj.filters
+*.user
+*.suo
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Windows junk
+Thumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# Logs and temp
+*.log
+*.tmp
+temp/

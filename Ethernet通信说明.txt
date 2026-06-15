@@ -1,0 +1,417 @@
+将MP2310(子站)的保持寄存器(MW00000～MW00009)显示在Visual C++创建的窗体中的示例如下图所示。
+
+连接的配合机器(电脑 Visual C++)的设定概要
+下面对用于连接MP2310与电脑的Visual C++应用程序的概要及程序示例进行说明。
+
+Visual C++应用程序概要
+用于连接MP2310与电脑的Visual C++应用程序的画面示例如下图所示。
+创建的程序示例在开始通信时，会读取MP2310的保持寄存器(MW00000～MW00009)中的10个字，并在画面中显示当前值。
+
+Visual C++应用程序的说明
+1、设定电脑侧IP地址用的【TextBox】。
+2、设定电脑侧端口编号用的【TextBox】。
+3、设定控制器(MP)侧IP地址用的【TextBox】。
+4、设定控制器(MP)侧端口编号用的【TextBox】。
+5、选择连接类型的【ComboBox】。
+6、启动TCP/UDP打开处理的【Button】。
+点击按钮，创建与1～6的设定值对应的套接字，执行TCP打开处理。
+7、开始信息通信(读取MP2310的寄存器值)的【Button】。
+点击按钮，启动以100 ms为周期的定时器，按周期进行信息的收发处理。
+此外,从MP2310读取的寄存器值将反映在寄存器监视器中。
+8、结束信息通信(读取MP2310的寄存器值)的【Button】。
+点击按钮，停止以100 ms为周期的定时器，停止信息的收发处理。
+9、显示从MP2310读取的寄存器值的【DataGrid】。
+10、退出应用程序用的【Button】。
+点击按钮，执行套接字关闭处理，退出应用程序。
+
+以下程序示例需要可使用套接字库(Winsock)的环境。
+
+窗体程序示例
+
+namespace VC_SAMPLE
+{
+*
+*
+// 从外部文件引用的函数和变量
+extern "C"{
+extern int memobus_master_main( unsigned short trans_prt, unsigned long myip,
+unsigned short myport, unsigned long dstip, unsigned short
+dstport );
+extern int memobus_msg( unsigned short trans_prt, unsigned char* sbuf, unsigned char* rbuf );
+extern void mk_cmd_data( unsigned char SFC, unsigned char CPUNum, unsigned short Adr,
+unsigned short DataNum, unsigned char* sbuf );
+}
+private: System::Void Command1_Click(System::Object * sender, System::EventArgs * e)
+{
+unsigned long MyIP, DstIP;
+unsigned short MyPort, DstPort;
+int rc;
+// 获取电脑侧的IP地址
+// 记述从TextBox1～4获取IP地址的处理
+// 例)MyIP：0x0501A8C0 (192.168.1.5)
+// 获取电脑侧的端口编号
+// 记述从TextBox5获取端口编号的处理 例)MyPort：10001
+// 获取控制器(MP)侧的IP地址
+// 记述从TextBox6～9获取IP地址的处理 例)DstIP：0x0101A8C0
+// 获取控制器(MP)侧的端口编号
+// 记述从TextBox10获取端口编号的处理 例)DstPort：10001
+// 获取连接类型
+// 记述从ComboBox1获取连接类型的处理
+// 例)TransPort：TCP(0) * UDP(1)
+// TCP/UDP打开处理
+rc = memobus_master_main(TransPort, MyIP, MyPort, DstIP, DstPort)
+*
+*
+}
+private: System::Void Command2_Click(System::Object * sender, System::EventArgs * e)
+{
+// 记述启动定时器(100ms)的处理。
+}
+private: System::Void Command3_Click(System::Object * sender, System::EventArgs * e)
+{
+// 记述停止定时器的处理。
+}
+// 以下处理在Timer启动时以100ms为周期进行启动和处理
+private:System::XXXXX( )
+{
+unsigned char SFC = &H9 // 读取保持寄存器的内容(扩展)
+unsigned char CPUNum = 1 // 将对象设为CPU1
+unsigned short Adr = 0 // 将起始地址设为MW00000
+unsigned short DataNum = 10 // 从起始地址开始读取10个字
+// 创建扩展MEMOBUS发送数据
+MkCmdData(SFC, CPUNum, Adr, DataNum, Ssbuf)
+// 发送扩展MEMOBUS指令，接收响应
+rc = MemobusMsg(TransPort, Ssbuf, Srbuf)
+*
+*
+// 将值反映在寄存器监视器中
+// 记述显示读取的寄存器值的处理
+}
+*
+*
+*
+}
+
+
+
+扩展MEMOBUS协议信息通信用程序示例
+通过套接字的管理及扩展MEMOBUS协议进行信息通信的程序示例如下所示。
+本程序示例使用C语言记述，因此通过C++调用时请进行外部声明(extern “C” )。
+
+
+#include <stdio.h>
+#include <winsock.h>
+#include <winioctl.h>
+#define TCP_PRT 0
+#define UDP_PRT 1
+#define DATA_SIZE 4096
+int sd; /* Socket Discripter */
+struct sockaddr_in my;
+struct sockaddr_in dst;
+struct sockaddr_in from;
+short DATAi; // 发送数据数
+short MDATAi; // MEMOBUS数据长度
+unsigned char iSerial; // 序列号
+// 协议类型声明
+int memobus_master_main( unsigned short trans_prt, unsigned long myip,
+unsigned short myport, unsigned long dstip, unsigned short dstport );
+int memobus_msg( unsigned short trans_prt, char* sbuf, char* rbuf );
+int tcp_msg( char* sbuf, char* rbuf );
+int udp_msg( char* sbuf, char* rbuf );
+void mk_cmd_data( unsigned char SFC, unsigned char CPUNum,
+unsigned short Adr, unsigned short DataNum, char* sbuf );
+int chk_rsp_data( int rlen, char* sbuf, char* rbuf );
+/*********************************************************************/
+/* TCP/UDP 打开 */
+/*********************************************************************/
+int memobus_master_main( unsigned short trans_prt,
+unsigned long myip, unsigned short myport,
+unsigned long dstip, unsigned short dstport )
+{
+WSADATA wsadata;
+int rc;
+// Winsock.dll 的使用声明(最初时必要)
+rc = WSAStartup( 0x0101, &wsadata );
+if ( rc != 0 )
+{
+exit(0);
+}
+// 序列号设定初始化
+iSerial = 0x00;
+// sockaddr结构体(IP地址、端口编号等)的清零
+memset( (char *)&my, 0, sizeof(struct sockaddr));
+memset( (char *)&dst, 0, sizeof(struct sockaddr));
+// 声明电脑侧的IP地址、端口编号
+my.sin_family = AF_INET;
+my.sin_addr.s_addr = myip;
+my.sin_port = htons( myport );
+// 声明控制器(MP)侧的IP地址、端口编号
+dst.sin_family = AF_INET;
+dst.sin_addr.s_addr = dstip;
+dst.sin_port = htons( dstport );
+// 生成TCP或UDP套接字
+if( trans_prt == TCP_PRT )
+{ //TCP时
+sd = socket( AF_INET, SOCK_STREAM, 0 );
+}
+else
+{ //UDP时
+sd = socket( AF_INET, SOCK_DGRAM, 0 );
+}
+if ( sd <= 0 )
+{
+rc = -1;
+return( rc );
+}
+// 绑定本站端口编号(分配)
+rc = bind( sd, ( struct sockaddr *)&my, sizeof(struct sockaddr_in));
+if ( rc == -1 )
+{
+closesocket( sd );
+rc = -2;
+return( rc );
+}
+// 连接确立
+if( trans_prt == TCP_PRT )
+{ //TCP时
+rc = connect( sd, ( struct sockaddr *)&dst, sizeof(struct sockaddr_in));
+if( rc == -1 )
+{ //TCP时
+closesocket( sd );
+
+rc = -3;
+return( rc );
+}
+}
+return(rc);
+}
+/*********************************************************************/
+/* 发送指令数据，接收响应数据 */
+/*********************************************************************/
+int memobus_msg( unsigned short trans_prt, char* sbuf, char* rbuf )
+{
+int rc;
+if( trans_prt == TCP_PRT)
+{
+rc = tcp_msg(sbuf, rbuf);
+}
+else
+{
+rc = udp_msg(sbuf, rbuf);
+}
+return(rc);
+}
+/*********************************************************************/
+/* 发送指令数据，接收响应数据<TCP> */
+/*********************************************************************/
+int tcp_msg( char* sbuf, char* rbuf )
+{
+int slen, rlen;
+int rc = 0;
+// 发送指令数据
+slen = send( sd, sbuf, DATAi, 0 );
+if ( slen != DATAi ) // 发送成功时返回发送的字节数
+{
+closesocket(sd);
+rc = -1;
+return ( rc );
+}
+// 接收响应数据
+rlen = recv( sd, rbuf, DATA_SIZE, 0 );
+if ( rlen <= 0 ) //接收错误时返回0以下的值
+{
+closesocket(sd);
+
+rc = -2;
+return ( rc );
+}
+// 确认响应数据
+rc = chk_rsp_data( rlen, sbuf, rbuf );
+if ( rc != 0 ) //接收数据异常
+{
+closesocket(sd);
+return ( rc );
+}
+iSerial++; // 递增218报头的序列号
+return ( rc );
+}
+/*********************************************************************/
+/* 发送指令数据，接收响应数据 <UDP> */
+/*********************************************************************/
+int udp_msg( char* sbuf, char* rbuf )
+{
+int slen, rlen, fromlen;
+int rc = 0;
+// 发送指令数据
+slen = sendto( sd, sbuf, DATAi, 0, (struct sockaddr *)&dst, sizeof(struct sockaddr));
+if ( slen != DATAi ) // 发送成功时返回发送的字节数。
+{
+closesocket(sd);
+rc = -1;
+return ( rc );
+}
+// 接收响应数据
+fromlen = sizeof(struct sockaddr);
+rlen = recvfrom( sd, rbuf, DATA_SIZE, 0, (struct sockaddr *)&from, &fromlen );
+if ( rlen <= 0 ) //接收错误时返回0以下的值
+{
+closesocket(sd);
+rc = -2;
+return ( rc );
+}
+// 确认响应数据
+rc = chk_rsp_data( rlen, sbuf, rbuf );
+if ( rc != 0 ) //接收数据异常
+{
+closesocket(sd);
+
+return ( rc );
+}
+iSerial++; // 递增218报头的序列号
+return ( rc );
+}
+/*********************************************************************/
+/* 创建扩展MEMOBUS协议指令 */
+/*********************************************************************/
+void mk_cmd_data( unsigned char SFC, unsigned char CPUNum,
+unsigned short Adr, unsigned short DataNum, char* sbuf )
+{
+//计算数据数
+//MEMOBUS数据长度(Length为MFC至数据末尾)
+switch(SFC)
+{
+case 0x09:
+MDATAi = 8;
+break;
+default:
+break;
+}
+//计算总数据数
+DATAi = MDATAi +14; //218报头(12字节)+Length部(2字节)+MEMOBUS数据长度(可变)
+// 创建218报头部
+// 收发缓冲的初始化
+memset( sbuf, 0x00, DATA_SIZE );
+// 数据类别设定
+sbuf[0] = 0x11; // 扩展MEMOBUS(指令)
+// 设定序列号(每次发送时递增)
+sbuf[1] = iSerial;
+// 设定发送目标通道编号
+sbuf[2] = 0x00; // PLC侧通道不固定，因此可固定为0
+// 设定发送源通道编号
+sbuf[3] = 0x00; // 电脑中无通道概念，因此固定为0
+sbuf[4] = 0x00; // 预约
+sbuf[5] = 0x00; // 预约
+
+// 设定总数据数 (218报头起始至MEMOBUS数据末尾)
+sbuf[6] = (unsigned char)(DATAi & 0x00FF); // 数据长度(L)
+sbuf[7] = (unsigned char)((DATAi & 0xFF00) >> 8); // 数据长度(H)
+sbuf[8] = 0x00; // 预约
+sbuf[9] = 0x00; // 预约
+sbuf[10] = 0x00; // 预约
+sbuf[11] = 0x00; // 预约
+// 创建MEMOBUS数据部
+// Length 为 MFC 至数据末尾
+sbuf[12] = (unsigned char)(MDATAi & 0x00FF); // MEMOBUS数据长度(L)
+sbuf[13] = (unsigned char)((MDATAi & 0xFF00) >> 8); // MEMOBUS数据长度(H)
+// MFC固定为0x20
+sbuf[14] = 0x20;
+// SFC
+sbuf[15] = SFC;
+// 设定CPU编号
+sbuf[16] = (unsigned char)(CPUNum << 4); // 自身的CPU编号固定为0
+sbuf[17] = 0x00; // Spare固定为0
+// 设定引用编号
+sbuf[18] = (unsigned char)(Adr & 0x00FF); // Adr(L)
+sbuf[19] = (unsigned char)((Adr & 0xFF00) >> 8); // Adr(H)
+// 设定寄存器数
+sbuf[20] = (unsigned char)(DataNum & 0x00FF); // DataNum(L)
+sbuf[21] = (unsigned char)((DataNum & 0xFF00) >> 8); // DataNum(H)
+}
+/*********************************************************************/
+/* 确认响应数据 */
+/*********************************************************************/
+int chk_rsp_data(int rlen, char* sbuf, char* rbuf)
+{
+short rcvDATAi; // 接收总数据数
+int rc = 0;
+// 确认总数据长度
+switch ( sbuf[15] )
+{
+case 0x09:
+rcvDATAi = 20 + ( (sbuf[21] << 8) | sbuf[20] ) * 2;
+if ( rlen != rcvDATAi )
+{
+rc = -3;
+return( rc );
+}
+break;
+default:
+break;
+}
+// 确认数据包类型
+if ( rbuf[0] != 0x19 ) // 非MEMOBUS响应
+{
+rc = -4;
+return( rc );
+}
+// 确认序列号
+if ( sbuf[1] != rbuf[1] ) // 与指令的序列号不一致
+{
+rc = -5;
+return( rc );
+}
+// 确认通信文本的总数据长度
+if ( (rbuf[6] != (rcvDATAi & 0x00FF)) &&
+(rbuf[7] != (rcvDATAi & 0xFF00) >> 8) ) // ?字节 = 218报头(12字节)
+{ // + MEMOBUS数据(固定8字节+可变 DataNum*2字节)
+rc = -6;
+return( rc );
+}
+// 确认MEMOBUS数据长度
+// 确认MFC
+if ( rbuf[14] != 0x20 )// MFC固定为0x20
+{
+rc = -7;
+return( rc );
+}
+// 确认SFC
+if ( rbuf[15] != sbuf[15] )
+{
+rc = -8;
+return( rc );
+}
+// 确认寄存器数
+switch ( sbuf[15] )
+{
+case 0x09:
+if (( rbuf[18] != sbuf[20] ) || (rbuf[19] != sbuf[21] ))
+{
+rc = -9;
+return( rc );
+}
+break;
+default:
+break;
+}
+return( rc );
+
+
+通信的开始方法
+请按照以下步骤，进行电脑(Visual C++应用程序)与MP2310的通信。
+1.
+开始MP2310的信息接收动作。
+使用自动接收功能时，信息接收开始动作由系统执行，因此无需操作。
+2.
+启动电脑的Visual C++创建的应用程序后，按照以下步骤开始与MP2310进行通信。
+1、设定电脑侧的IP地址。例)192.168.1.2
+2、设定电脑侧的端口编号。例)10001
+3、设定控制器(MP)侧的IP地址。例)192.168.1.1
+4、设定控制器(MP)侧的端口编号。例)10001
+5、选择连接类型。例)TCP
+6、点击【TCP/UDP Open】。
+7、点击【Start】*。
+* 点击【Stop】时，将暂时中断信息通信。
+
+
+
+
